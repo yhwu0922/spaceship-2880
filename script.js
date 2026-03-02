@@ -1189,6 +1189,106 @@ const MAP_DATA = [
     ]
 ];
 
+// --- Audio System ---
+const AudioSys = {
+    ctx: null,
+    bgmNode: null,
+    bgmGain: null,
+    bgmInterval: null,
+    lastApproachTone: 0,
+    isPlaying: false,
+    init() {
+        if (!this.ctx) {
+            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+    },
+    playOsc(freq, type, duration, vol = 0.1, slideFreq = null) {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        if (slideFreq) {
+            osc.frequency.exponentialRampToValueAtTime(slideFreq, this.ctx.currentTime + duration);
+        }
+        gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + duration);
+    },
+    playFire() {
+        // 8-bit damage sound
+        this.playOsc(150, 'sawtooth', 0.1, 0.2, 50);
+        setTimeout(() => this.playOsc(200, 'square', 0.1, 0.2, 100), 100);
+    },
+    playTeleportUse() {
+        // Classic 8-bit slide up (like pipe or jump)
+        this.playOsc(400, 'square', 0.3, 0.1, 1200);
+    },
+    playTeleportApproach() {
+        const now = Date.now();
+        if (now - this.lastApproachTone > 400) {
+            // Soft magical chime
+            this.playOsc(880, 'sine', 0.1, 0.05);
+            setTimeout(() => this.playOsc(1320, 'sine', 0.1, 0.05), 100);
+            this.lastApproachTone = now;
+        }
+    },
+    playSuccess() {
+        // Upbeat victory jingle
+        this.playOsc(523.25, 'square', 0.1, 0.1); // C5
+        setTimeout(() => this.playOsc(659.25, 'square', 0.1, 0.1), 120); // E5
+        setTimeout(() => this.playOsc(783.99, 'square', 0.1, 0.1), 240); // G5
+        setTimeout(() => this.playOsc(1046.50, 'square', 0.3, 0.1), 360); // C6
+    },
+    playGameOver() {
+        // Mario-style death (descending)
+        this.playOsc(349.23, 'square', 0.15, 0.15); // F4
+        setTimeout(() => this.playOsc(329.63, 'square', 0.15, 0.15), 150); // E4
+        setTimeout(() => this.playOsc(293.66, 'square', 0.15, 0.15), 300); // D4
+        setTimeout(() => this.playOsc(261.63, 'square', 0.3, 0.15, 100), 450); // C4 slide down
+    },
+    startBGM() {
+        if (!this.ctx) return;
+        if (this.isPlaying) return;
+        this.isPlaying = true;
+
+        // Simple 8-bit arpeggio melody loop
+        const notes = [
+            523.25, 659.25, 783.99, 1046.50, // C E G C
+            523.25, 659.25, 783.99, 1046.50, // C E G C
+            440.00, 523.25, 659.25, 880.00,  // A C E A
+            440.00, 523.25, 659.25, 880.00,  // A C E A
+            349.23, 440.00, 523.25, 698.46,  // F A C F
+            392.00, 493.88, 587.33, 783.99,  // G B D G
+            523.25, 659.25, 783.99, 1046.50, // C E G C
+            523.25, 659.25, 783.99, 1046.50  // C E G C
+        ];
+
+        let noteIndex = 0;
+
+        const playNextNote = () => {
+            if (!this.isPlaying) return;
+            this.playOsc(notes[noteIndex], 'square', 0.15, 0.05);
+            noteIndex = (noteIndex + 1) % notes.length;
+        };
+
+        // Play first note immediately, then set interval
+        playNextNote();
+        this.bgmInterval = setInterval(playNextNote, 150); // Fast tempo
+    },
+    stopBGM() {
+        this.isPlaying = false;
+        if (this.bgmInterval) {
+            clearInterval(this.bgmInterval);
+            this.bgmInterval = null;
+        }
+    }
+};
+
 // Input handling
 const keys = {
     ArrowUp: false,
@@ -1444,6 +1544,9 @@ function addEnemies() {
 }
 
 function resetGame(fullReset = false) {
+    if (fullReset) {
+        AudioSys.stopBGM();
+    }
     player.x = spawnX;
     player.y = spawnY;
     player.isGiant = false;
@@ -1467,6 +1570,8 @@ function startGame() {
     gameState = 'playing';
     startScreen.classList.add('hidden');
     gameStartTime = performance.now();
+    AudioSys.init();
+    AudioSys.startBGM();
 }
 
 function update(deltaTime) {
@@ -1537,6 +1642,18 @@ function update(deltaTime) {
     }
 
     // Teleporter logic
+    let nearTeleporter = false;
+    for (let t of teleporters) {
+        const dx = player.x - t.x;
+        const dy = player.y - t.y;
+        if (dx * dx + dy * dy < 20000) { // ~141 pixels
+            nearTeleporter = true;
+        }
+    }
+    if (nearTeleporter) {
+        AudioSys.playTeleportApproach();
+    }
+
     if (teleportCooldown > 0) {
         teleportCooldown -= deltaTime;
     } else {
@@ -1544,6 +1661,7 @@ function update(deltaTime) {
             if (checkOverlap(player, t)) {
                 const otherTeleporters = teleporters.filter(tp => tp !== t);
                 if (otherTeleporters.length > 0) {
+                    AudioSys.playTeleportUse();
                     const dest = otherTeleporters[Math.floor(Math.random() * otherTeleporters.length)];
                     player.x = dest.x;
                     player.y = dest.y;
@@ -1601,6 +1719,7 @@ function checkOverlap(a, b) {
 }
 
 function killPlayer() {
+    AudioSys.playFire();
     currentLives--;
     updateLivesDisplay();
 
@@ -1627,6 +1746,8 @@ function killPlayer() {
 
 function gameOver() {
     gameState = 'gameover';
+    AudioSys.stopBGM();
+    AudioSys.playGameOver();
     document.getElementById('game-over-screen').classList.remove('hidden');
 }
 
@@ -1639,6 +1760,8 @@ function updateLivesDisplay() {
 
 function winGame(finalScoreMs) {
     gameState = 'end';
+    AudioSys.stopBGM();
+    AudioSys.playSuccess();
     updateTimerText(finalScoreMs, finalTimeEl);
     endScreen.classList.remove('hidden');
 
